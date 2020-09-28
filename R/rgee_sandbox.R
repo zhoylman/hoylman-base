@@ -11,14 +11,13 @@
 # conda install pandas
 # conda install numpy
 
-
-
 library(reticulate)
 library(rgee)
 library(cptcity)
 library(raster)
 library(stars)
 library(sf)
+library(tidyverse)
 
 
 use_condaenv("gee-base", conda = "auto",required = TRUE)
@@ -27,8 +26,8 @@ ee = import("ee")
 ee_Initialize(email = 'zhoylman@gmail.com', drive = TRUE)
 
 # Define a region of interest with sf
-ee_roi <- st_read("/home/zhoylman/mesonet-dashboard/data/shp/states.shp") %>%
-  filter(STATE_ABBR == 'MT') %>%
+ee_roi = st_read("/home/zhoylman/mesonet-dashboard/data/shp/states.shp") %>%
+  dplyr::filter(STATE_ABBR == 'MT') %>%
   st_geometry() %>%
   sf_as_ee()
 
@@ -40,12 +39,24 @@ ee_roi <- st_read("/home/zhoylman/mesonet-dashboard/data/shp/states.shp") %>%
 
 smap <- ee$ImageCollection("NASA_USDA/HSL/SMAP_soil_moisture")
 
-smap_composite <- smap$
-  filter(ee$Filter$date('2018-01-01', '2018-12-31'))
+point <- ee$Geometry$Point(-110,46)
+
+multipoint_sf = RCurl::getURL("https://cfcmesonet.cfc.umt.edu/api/stations?type=csv&clean=true") %>%
+  read_csv() %>%
+  select(`Station ID`,Longitude, Latitude) %>%
+  sf::st_as_sf(coords = c('Longitude', 'Latitude')) %>%
+  st_set_crs(., 4326) 
+
+smap_multiband <- smap$
+  #filter(ee$Filter$date('2018-04-01', '2018-8-31'))$
+  select("ssma")$
+  #mean()$
+  toBands()$
+  clip(ee_roi)
 
 # Create a annual composite
 smap_composite <- smap$
-  filter(ee$Filter$date('2018-04-01', '2018-10-31'))$
+  filter(ee$Filter$date('2020-08-01', '2020-10-31'))$
   select("ssma")$
   median()
 
@@ -59,7 +70,7 @@ Map$addLayer(
     max = 2,
     palette = c("#FF0000","#FFFFFF","#0000FF")
   )
-) + Map$addLayer(ee_roi)
+) + Map$addLayer(ee_roi)+ Map$addLayer(multipoint_sf %>% st_geometry() %>% sf_as_ee())
 
 # Download raster
 ee_raster <- ee_as_raster(
@@ -78,6 +89,63 @@ ndvi_mean_sf <- ee_extract(
   scale = 10000,
   sf = TRUE
 )
+
+point_extract = ee_extract(
+  x = smap_multiband,
+  y = point,
+  fun = ee$Reducer$mean(),
+  scale = 10000,
+  sf = T
+) 
+
+smap_timeseries = point_extract %>%
+  as.data.frame() %>%
+  select(-id, -geometry) %>%
+  t() %>%
+  as.data.frame() %>%
+  rename(., 'value' = `1`) %>%
+  mutate(time = as.numeric( sub("\\D*(\\d+).*", "\\1", rownames(.))) %>%
+           as.character() %>%
+           as.Date(., format = '%Y%m%d'))
+
+tictoc::tic()
+multipoint_extract = ee_extract(
+  x = smap_multiband,
+  y = multipoint_sf,
+  fun = ee$Reducer$mean(),
+  scale = 10000,
+  sf = T
+) 
+tictoc::toc()
+
+mesonet_smap_timeseries = multipoint_extract %>% 
+  as.data.frame() %>%
+  select(-geometry) %>%
+  gather(key = key, value = value, -`Station ID`) %>%
+  mutate(time = as.numeric( sub("\\D*(\\d+).*", "\\1", key)) %>%
+           as.character() %>%
+           as.Date(., format = '%Y%m%d')) %>%
+  select(`Station ID`, value, time)
+
+
+ggplot(data = mesonet_smap_timeseries) +
+  geom_line(aes(x = time, y = value, color = `Station ID`))
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
